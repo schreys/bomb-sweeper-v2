@@ -8,6 +8,18 @@ const OY = 74;
 const LIVES = 3;
 const MOVE_TIME = 0.12;
 const PUSH_TIME = 0.16;
+// Bonus stage after every 10 mazes, as in Game A: the maze slides right 41 times.
+const BONUS_EVERY = 10;
+const SCROLL_STEPS = 41;
+const SCROLL_DELAY = 3;
+const SCROLL_INTERVAL = 1.35;
+const MAX_LIVES = 5;
+// The clock ticks every half second; the ticks left are counted into the score one by one.
+const TICK = 0.5;
+const TALLY_DELAY = 0.8;
+const TALLY_RATE = 0.085;
+const BONUS_POINTS = 100;
+const BONUS_TALLY_RATE = 0.03;
 const DIRS = { U: [-1, 0], D: [1, 0], L: [0, -1], R: [0, 1] };
 const KEYS = {
   ArrowUp: "U", ArrowDown: "D", ArrowLeft: "L", ArrowRight: "R",
@@ -51,6 +63,9 @@ const game = {
   defusedAt: null,
   timeLeft: 0,
   stateTime: 0,
+  bonus: false,
+  scroll: null,
+  tally: null,
 };
 
 // Purely visual state; never affects the game rules.
@@ -68,6 +83,7 @@ const fx = {
   flash: 0,
   intro: 0,
   hurt: null,
+  scrollT: 1,
 };
 
 const ease = (t) => 1 - (1 - t) ** 3;
@@ -95,15 +111,77 @@ function loadLevel(i) {
   game.bombs = [...(fix.bombs || lv.bombs)];
   game.defusedAt = null;
   game.timeLeft = lv.time;
+  game.bonus = false;
+  game.scroll = null;
   const p = cellCenter(game.player);
   Object.assign(fx, { from: p, to: p, moveT: 1, bump: null, pushes: [], floaters: [], intro: 0, hurt: null });
-  if (typeof lv.source !== "number") {
-    setState("playing", `Level ${lv.id} \u2014 uit je Godot-versie`);
+  Sound.play("levelStart");
+  setState("playing", `Level ${lv.id} van ${levels.length}`);
+}
+
+function loadBonus() {
+  game.bonus = true;
+  game.walls = new Set(SEGMENTS.filter((k) => isBoundary(k) && !(k[0] === "v" && k[2] === "0")));
+  game.player = [ROWS - 1, COLS - 1];
+  game.bombs = [];
+  game.defusedAt = null;
+  game.timeLeft = 0;
+  game.scroll = { step: 0, wait: SCROLL_DELAY };
+  const p = cellCenter(game.player);
+  Object.assign(fx, { from: p, to: p, moveT: 1, bump: null, pushes: [], floaters: [], intro: 0, hurt: null, scrollT: 1 });
+  Sound.play("bonusStart");
+  setState("playing", "Bonus: laat je niet platdrukken tot het doolhof stilstaat, pak dan de bom bovenaan.");
+}
+
+function scrollStep() {
+  const s = game.scroll;
+  const w = game.walls;
+  const set = (k, on) => (on ? w.add(k) : w.delete(k));
+  const [r, c] = game.player;
+  const edge = `v${r}${COLS - 1}`;
+  if (c === COLS - 1 && w.has(edge) && w.has(`v${r}${COLS - 2}`)) {
+    blowUp("Platgedrukt!");
     return;
   }
-  const m = Math.floor(lv.source / 60);
-  const s = String(Math.floor(lv.source % 60)).padStart(2, "0");
-  setState("playing", `Level ${lv.id} \u2014 in de video op ${m}:${s}`);
+  s.step += 1;
+  Sound.play("bonusMove");
+  // A wall reaching the player at the right edge is pushed back one column first.
+  if (c === COLS - 1 && w.has(edge)) {
+    set(edge, false);
+    set(`v${r}${COLS - 2}`, true);
+  }
+  for (let col = COLS; col > 0; col--) {
+    for (let row = 0; row < ROWS; row++) set(`v${row}${col}`, w.has(`v${row}${col - 1}`));
+  }
+  for (let col = COLS - 1; col > 0; col--) {
+    for (let row = 0; row <= ROWS; row++) set(`h${row}${col}`, w.has(`h${row}${col - 1}`));
+  }
+  const pick = (n, max) => {
+    const out = new Set();
+    while (out.size < n) out.add(Math.floor(Math.random() * max));
+    return [...out];
+  };
+  const odd = s.step % 2 === 1;
+  for (let row = 0; row <= ROWS; row++) set(`h${row}0`, false);
+  for (let row = 0; row < ROWS; row++) set(`v${row}0`, s.step < 35 && odd);
+  if (s.step < 35) {
+    for (const row of pick(odd ? 1 : 2, ROWS + 1)) set(`h${row}0`, true);
+    for (const row of pick(odd ? 1 : 2, ROWS)) set(`v${row}0`, !odd);
+  } else {
+    if (s.step !== 40) set("h00", true);
+    set(`h${ROWS}0`, true);
+  }
+  fx.scrollT = 0;
+  fx.pushes = [];
+  if (c < COLS - 1) {
+    game.player = [r, c + 1];
+    walkTo(cellCenter(game.player), fx.dir);
+  }
+  if (s.step === SCROLL_STEPS) {
+    for (let row = 0; row < ROWS; row++) set(`v${row}0`, true);
+    game.bombs = ["h01"];
+    ui.message.textContent = "Het doolhof staat stil: pak de bom bovenaan!";
+  }
 }
 
 function setState(state, message = "") {
@@ -159,6 +237,9 @@ function move(dir) {
     fx.pushes.push({ from: key, to: far, t: 0 });
     const [x1, y1, x2, y2] = segmentLine(far);
     dust((x1 + x2) / 2, (y1 + y2) / 2, 10);
+    Sound.play("push");
+  } else {
+    Sound.play("move");
   }
   game.player = [nr, nc];
   walkTo(cellCenter(game.player), dir);
@@ -168,16 +249,26 @@ function bump(dy, dx) {
   fx.bump = { dx, dy, t: 0 };
 }
 
+function ticksLeft() {
+  return Math.max(0, Math.ceil(game.timeLeft / TICK - 1e-9));
+}
+
 function defuse(key, dir) {
-  const bonus = Math.ceil(game.timeLeft) * 10;
-  game.score += 100 + bonus;
+  const points = game.bonus ? BONUS_POINTS : ticksLeft();
+  game.tally = { left: points, wait: TALLY_DELAY, rate: game.bonus ? BONUS_TALLY_RATE : TALLY_RATE };
+  Sound.play(game.bonus ? "bonusClear" : "levelEnd");
   game.defusedAt = key;
   walkTo(bombPos(key), dir);
   const [x, y] = bombPos(key);
   confetti(x, y);
-  fx.floaters.push({ x, y: y - 20, text: `+${100 + bonus}`, t: 0 });
+  fx.floaters.push({ x, y: y - 20, text: `+${points}`, t: 0 });
+  if (game.bonus) {
+    game.lives = Math.min(game.lives + 1, MAX_LIVES);
+    setState("defused", `Bonus gehaald! +${points} en een extra leven`);
+    return;
+  }
   localStorage.setItem("bombsweeper.best", Math.max(game.index + 2, bestLevel()));
-  setState("defused", `Bom onschadelijk! +${100 + bonus}`);
+  setState("defused", `Bom onschadelijk! +${points}`);
 }
 
 function blowUp(message) {
@@ -187,15 +278,15 @@ function blowUp(message) {
 }
 
 function explode() {
+  Sound.play("boom");
   fx.shake = 16;
   fx.flash = 1;
   // The player gets blown away from the nearest bomb.
   const [px, py] = playerPx();
   const [bx] = game.bombs.map(bombPos)
     .sort((a, b) => Math.hypot(a[0] - px, a[1] - py) - Math.hypot(b[0] - px, b[1] - py))[0] || [px];
-  fx.hurt = { t: 0, dx: px >= bx ? 1 : -1 };
-  for (const key of game.bombs) {
-    const [x, y] = bombPos(key);
+  fx.hurt = { t: 0, dx: game.bonus ? -1 : px >= bx ? 1 : -1 };
+  for (const [x, y] of game.bonus ? [[px, py]] : game.bombs.map(bombPos)) {
     for (let i = 0; i < 40; i++) {
       const a = Math.random() * Math.PI * 2;
       const v = 80 + Math.random() * 260;
@@ -255,10 +346,12 @@ function startGame() {
   game.lives = LIVES;
   const requested = Number(params.get("level") || location.hash.slice(1)) - 1;
   loadLevel(requested >= 0 && requested < levels.length ? requested : 0);
+  if (params.has("bonus")) loadBonus();
 }
 
 function updateFx(dt) {
   fx.moveT += dt / MOVE_TIME;
+  fx.scrollT += dt / MOVE_TIME;
   fx.intro += dt;
   if (fx.bump) {
     fx.bump.t += dt / 0.15;
@@ -293,22 +386,53 @@ function updateFx(dt) {
 function update(dt) {
   game.stateTime += dt;
   updateFx(dt);
-  if (game.state === "playing" && !TEST_MODE) {
+  if (game.state === "playing" && game.bonus) {
+    const s = game.scroll;
+    if (s.step < SCROLL_STEPS) {
+      s.wait -= dt;
+      if (s.wait <= 0) {
+        s.wait += SCROLL_INTERVAL;
+        scrollStep();
+      }
+    }
+  } else if (game.state === "playing" && !TEST_MODE) {
+    const before = ticksLeft();
     game.timeLeft -= dt;
+    if (game.timeLeft > 0 && ticksLeft() < before) Sound.play("clock");
     if (game.timeLeft <= 0) {
       game.timeLeft = 0;
       blowUp("BOEM! Probeer opnieuw.");
     }
-  } else if (game.state === "defused" && game.stateTime > 1.3) {
-    if (game.index + 1 < levels.length) loadLevel(game.index + 1);
-    else setState("finished", "Alle bommen onschadelijk gemaakt! Druk op Enter.");
+  } else if (game.state === "defused") {
+    const t = game.tally;
+    t.wait -= dt;
+    while (t.wait <= 0 && t.left > 0) {
+      t.left -= 1;
+      game.score += 1;
+      Sound.play("score");
+      if (!game.bonus) game.timeLeft = t.left * TICK;
+      t.wait += t.left > 0 ? t.rate : 0.6;
+    }
+    if (t.left === 0 && t.wait <= 0) {
+      const done = game.index + 1;
+      if (!game.bonus && done % BONUS_EVERY === 0 && done < levels.length) loadBonus();
+      else if (done < levels.length) loadLevel(done);
+      else setState("finished", "Alle bommen onschadelijk gemaakt! Druk op Enter.");
+    }
   } else if (game.state === "exploded" && game.stateTime > 2.6) {
-    if (game.lives > 0) loadLevel(game.index);
-    else setState("gameover", "Game over. Druk op Enter om opnieuw te beginnen.");
+    if (game.lives > 0) {
+      if (game.bonus) loadBonus();
+      else loadLevel(game.index);
+    } else {
+      setState("gameover", "Game over. Druk op Enter om opnieuw te beginnen.");
+      Sound.play("gameOver");
+    }
   }
-  ui.level.textContent = game.index + 1;
+  ui.level.textContent = game.bonus ? "B" : game.index + 1;
   ui.total.textContent = levels.length;
-  ui.time.textContent = TEST_MODE ? "\u221e" : Math.ceil(game.timeLeft);
+  if (game.state === "defused") ui.time.textContent = game.tally.left;
+  else if (game.bonus) ui.time.textContent = SCROLL_STEPS - game.scroll.step;
+  else ui.time.textContent = TEST_MODE ? "\u221e" : ticksLeft();
   ui.score.textContent = game.score;
   ui.lives.textContent = "\u2665".repeat(Math.max(0, game.lives)) || "0";
 }
@@ -428,7 +552,7 @@ function drawBomb(key, t) {
 
 function drawBombAt(x, y, t) {
   const lv = levels[game.index];
-  const urgent = !TEST_MODE && game.state === "playing" && game.timeLeft < 5;
+  const urgent = !TEST_MODE && !game.bonus && game.state === "playing" && game.timeLeft < 5;
   const pulse = urgent ? 1 + Math.sin(t * 18) * 0.08 : 1 + Math.sin(t * 4) * 0.03;
   const wobble = urgent ? Math.sin(t * 40) * 1.5 : 0;
   ctx.save();
@@ -454,7 +578,7 @@ function drawBombAt(x, y, t) {
   ctx.fillRect(-6, -22, 12, 7);
 
   // Fuse gets shorter as the timer runs down.
-  const left = TEST_MODE || !lv || game.state === "title" ? 1 : clamp01(game.timeLeft / lv.time);
+  const left = TEST_MODE || game.bonus || !lv || game.state === "title" ? 1 : clamp01(game.timeLeft / lv.time);
   ctx.strokeStyle = "#c9a26b";
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -643,8 +767,8 @@ function drawParticles() {
 
 function drawTimerBar(t) {
   const lv = levels[game.index];
-  if (TEST_MODE || !lv || !["playing", "paused"].includes(game.state)) return;
-  const frac = clamp01(game.timeLeft / lv.time);
+  if ((TEST_MODE && !game.bonus) || !lv || !game.state.match(/^(playing|paused)$/)) return;
+  const frac = game.bonus ? 1 - game.scroll.step / SCROLL_STEPS : clamp01(game.timeLeft / lv.time);
   const x = OX;
   const y = canvas.height - 18;
   const w = COLS * CELL;
@@ -652,8 +776,8 @@ function drawTimerBar(t) {
   ctx.beginPath();
   ctx.roundRect(x, y, w, 8, 4);
   ctx.fill();
-  const hue = frac * 120;
-  const blink = frac < 0.2 ? 0.6 + Math.sin(t * 16) * 0.4 : 1;
+  const hue = game.bonus ? 200 : frac * 120;
+  const blink = frac < 0.2 && !game.bonus ? 0.6 + Math.sin(t * 16) * 0.4 : 1;
   ctx.fillStyle = `hsla(${hue}, 80%, 55%, ${blink})`;
   ctx.beginPath();
   ctx.roundRect(x, y, Math.max(8, w * frac), 8, 4);
@@ -713,7 +837,10 @@ function draw(t) {
     ctx.restore();
     return;
   }
+  ctx.save();
+  if (game.bonus) ctx.translate((1 - ease(clamp01(fx.scrollT))) * -CELL, 0);
   drawWalls();
+  ctx.restore();
   const blown = game.state === "exploded" || (game.state === "gameover" && fx.hurt);
   game.bombs.forEach((key) => {
     if (key === game.defusedAt) return;
@@ -741,7 +868,7 @@ function draw(t) {
     ctx.textAlign = "center";
     ctx.font = "900 40px system-ui, sans-serif";
     ctx.fillStyle = COLORS.text;
-    ctx.fillText(`LEVEL ${game.index + 1}`, 300, 228 - fx.intro * 20);
+    ctx.fillText(game.bonus ? "BONUS" : `LEVEL ${game.index + 1}`, 300, 228 - fx.intro * 20);
     ctx.globalAlpha = 1;
   }
   if (game.state === "paused") drawPanel([["PAUZE", 36], ["Druk op P", 18]]);
@@ -758,7 +885,7 @@ function draw(t) {
 
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "TEXTAREA") return;
-  if ((e.key === "e" || e.key === "E") && TEST_MODE && ["playing", "edit"].includes(game.state)) {
+  if ((e.key === "e" || e.key === "E") && TEST_MODE && !game.bonus && ["playing", "edit"].includes(game.state)) {
     toggleEdit();
   } else if (TEST_MODE && ["playing", "edit", "defused"].includes(game.state) && "nNbB".includes(e.key)) {
     const step = e.key.toLowerCase() === "n" ? 1 : -1;
@@ -773,6 +900,8 @@ document.addEventListener("keydown", (e) => {
     startGame();
   } else if ((e.key === "r" || e.key === "R") && game.state === "playing") {
     blowUp("BOEM! Herstarten kost een leven.");
+  } else if (e.key === "m" || e.key === "M") {
+    toggleSound();
   } else if (e.key === "p" || e.key === "P") {
     if (game.state === "playing") setState("paused", "Pauze \u2014 druk op P");
     else if (game.state === "paused") setState("playing");
@@ -800,6 +929,13 @@ document.addEventListener("pointerdown", (e) => {
 document.getElementById("restart-btn").addEventListener("click", () => {
   if (["playing", "paused"].includes(game.state)) blowUp("BOEM! Herstarten kost een leven.");
 });
+
+const soundBtn = document.getElementById("sound-btn");
+function toggleSound() {
+  soundBtn.textContent = Sound.toggle() ? "\u{1F507}" : "\u{1F50A}";
+}
+soundBtn.textContent = Sound.isMuted() ? "\u{1F507}" : "\u{1F50A}";
+soundBtn.addEventListener("click", toggleSound);
 
 // Fullscreen: native where supported (Android), otherwise a CSS-only layout (iPhone).
 const fsBtn = document.getElementById("fs-btn");

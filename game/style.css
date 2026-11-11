@@ -185,7 +185,8 @@ body.fs canvas {
 
 @media (orientation: landscape) {
   body.fs .device { flex-direction: row; }
-  body.fs .hud { flex-direction: column; width: 80px; margin: 0; }
+  body.fs .hud { flex-direction: column; width: 80px; margin: 0; gap: 6px; }
+  body.fs .hud-btn { flex-basis: 36px; }
 }
 
 @media (orientation: portrait) {

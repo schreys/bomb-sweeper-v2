@@ -32,7 +32,16 @@ const SOUNDS = {
 const Sound = (() => {
   const VOLUME = 0.05;
   let ctx = null;
+  let pending = null;
   let muted = localStorage.getItem("bombsweeper.muted") === "1";
+
+  // A sound requested by the very first tap arrives before the context runs; play it once it does.
+  function flush() {
+    if (ctx.state !== "running" || !pending) return;
+    const { name, at } = pending;
+    pending = null;
+    if (performance.now() - at < 1500) play(name);
+  }
 
   // Browsers only allow audio after a user gesture; on Android that is pointerup/touchend, not pointerdown.
   function unlock() {
@@ -40,12 +49,17 @@ const Sound = (() => {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       ctx = new AC();
+      ctx.onstatechange = flush;
     }
-    if (ctx.state !== "running") ctx.resume().catch(() => {});
+    if (ctx.state !== "running") ctx.resume().then(flush, () => {});
   }
 
   function play(name) {
-    if (muted || !ctx || ctx.state !== "running") return;
+    if (muted) return;
+    if (!ctx || ctx.state !== "running") {
+      pending = { name, at: performance.now() };
+      return;
+    }
     const t0 = ctx.currentTime + 0.005;
     for (const [a, b, f] of SOUNDS[name]) {
       const osc = ctx.createOscillator();

@@ -8,7 +8,7 @@ Webversie van de Nintendo Game & Watch *Bomb Sweeper*: loods het mannetje door h
 python3 tools/serve.py        # http://127.0.0.1:8137/
 ```
 
-- Pijltjes/WASD: bewegen en duwen · R: herstarten · P: pauze · Enter: start
+- Pijltjes/WASD: bewegen en duwen · R: bom laten ontploffen (kost een leven) · P: pauze · Enter: start
 - `?test` — testmodus zonder timer · N/B: volgend/vorig level · E: bewerken · `?test&level=12` start op level 12
 
 ## Levels

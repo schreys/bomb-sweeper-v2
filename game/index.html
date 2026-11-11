@@ -2,9 +2,12 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#141a33">
   <title>Bomb Sweeper</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <main class="device">
@@ -14,17 +17,13 @@
       <span>TIJD <b id="time">0</b></span>
       <span>SCORE <b id="score">0</b></span>
       <span>LEVENS <b id="lives">3</b></span>
+      <button id="restart-btn" class="hud-btn" type="button" aria-label="Level herstarten">↻</button>
+      <button id="fs-btn" class="hud-btn" type="button" aria-label="Volledig scherm">⛶</button>
     </div>
-    <canvas id="screen" width="600" height="470"></canvas>
+    <canvas id="screen" width="600" height="484"></canvas>
     <p id="message"></p>
-    <div class="pad" aria-label="Besturing">
-      <button data-dir="U" aria-label="Omhoog">▲</button>
-      <button data-dir="L" aria-label="Links">◀</button>
-      <button data-dir="R" aria-label="Rechts">▶</button>
-      <button data-dir="D" aria-label="Omlaag">▼</button>
-    </div>
-    <p class="help keys-help">Pijltjes/WASD: bewegen en muren duwen · R: level herstarten · P: pauze · Enter: start</p>
-    <p class="help touch-help">Op gsm: veeg over het speelveld of gebruik de knoppen</p>
+    <p class="help keys-help">Pijltjes/WASD of klik: bovenste/onderste derde = op/neer, linker/rechter derde = links/rechts · R: bom laten ontploffen (kost een leven) · P: pauze</p>
+    <p class="help touch-help">Tik bovenaan/onderaan om op/neer te gaan, links/rechts in het midden voor links/rechts · ↻ bom laten ontploffen (kost een leven) · ⛶ volledig scherm</p>
     <p class="help" id="test-help" hidden><b>TESTMODUS</b> · geen timer · N/B: volgend/vorig level · E: level bewerken · <code>?test&amp;level=5</code> start op level 5</p>
     <section id="editor" hidden>
       <p class="help">Correcties (worden bewaard in je browser). Stuur ze door of plak ze in <code>tools/overrides.json</code>.</p>
@@ -32,7 +31,7 @@
       <button id="copy" type="button">Kopieer correcties</button>
     </section>
   </main>
-  <script src="levels.js?v=4"></script>
-  <script src="game.js?v=4"></script>
+  <script src="levels.js?v=7"></script>
+  <script src="game.js?v=7"></script>
 </body>
 </html>

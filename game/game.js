@@ -4,7 +4,7 @@ const ROWS = 4;
 const COLS = 6;
 const CELL = 80;
 const OX = 60;
-const OY = 60;
+const OY = 74;
 const LIVES = 3;
 const MOVE_TIME = 0.12;
 const PUSH_TIME = 0.16;
@@ -67,6 +67,7 @@ const fx = {
   shake: 0,
   flash: 0,
   intro: 0,
+  hurt: null,
 };
 
 const ease = (t) => 1 - (1 - t) ** 3;
@@ -95,7 +96,7 @@ function loadLevel(i) {
   game.defusedAt = null;
   game.timeLeft = lv.time;
   const p = cellCenter(game.player);
-  Object.assign(fx, { from: p, to: p, moveT: 1, bump: null, pushes: [], floaters: [], intro: 0 });
+  Object.assign(fx, { from: p, to: p, moveT: 1, bump: null, pushes: [], floaters: [], intro: 0, hurt: null });
   if (typeof lv.source !== "number") {
     setState("playing", `Level ${lv.id} \u2014 uit je Godot-versie`);
     return;
@@ -179,9 +180,20 @@ function defuse(key, dir) {
   setState("defused", `Bom onschadelijk! +${100 + bonus}`);
 }
 
+function blowUp(message) {
+  if (!TEST_MODE) game.lives -= 1;
+  explode();
+  setState("exploded", game.lives > 0 ? message : "BOEM! Game over.");
+}
+
 function explode() {
   fx.shake = 16;
   fx.flash = 1;
+  // The player gets blown away from the nearest bomb.
+  const [px, py] = playerPx();
+  const [bx] = game.bombs.map(bombPos)
+    .sort((a, b) => Math.hypot(a[0] - px, a[1] - py) - Math.hypot(b[0] - px, b[1] - py))[0] || [px];
+  fx.hurt = { t: 0, dx: px >= bx ? 1 : -1 };
   for (const key of game.bombs) {
     const [x, y] = bombPos(key);
     for (let i = 0; i < 40; i++) {
@@ -265,6 +277,16 @@ function updateFx(dt) {
   fx.floaters = fx.floaters.filter((f) => f.t < 1.2);
   fx.shake *= Math.exp(-dt * 8);
   fx.flash = Math.max(0, fx.flash - dt * 2.5);
+  if (fx.hurt) {
+    fx.hurt.t += dt;
+    if (Math.random() < dt * 12) {
+      const [x, y] = playerPx();
+      fx.particles.push({
+        x: x + (Math.random() - 0.5) * 20, y: y - 10, vx: (Math.random() - 0.5) * 20, vy: -30, g: -20,
+        life: 0.8 + Math.random() * 0.5, age: 0, size: 4 + Math.random() * 4, color: "#6b6b75",
+      });
+    }
+  }
   sparks(dt);
 }
 
@@ -275,14 +297,12 @@ function update(dt) {
     game.timeLeft -= dt;
     if (game.timeLeft <= 0) {
       game.timeLeft = 0;
-      game.lives -= 1;
-      explode();
-      setState("exploded", game.lives > 0 ? "BOEM! Probeer opnieuw." : "BOEM! Game over.");
+      blowUp("BOEM! Probeer opnieuw.");
     }
   } else if (game.state === "defused" && game.stateTime > 1.3) {
     if (game.index + 1 < levels.length) loadLevel(game.index + 1);
     else setState("finished", "Alle bommen onschadelijk gemaakt! Druk op Enter.");
-  } else if (game.state === "exploded" && game.stateTime > 1.8) {
+  } else if (game.state === "exploded" && game.stateTime > 2.6) {
     if (game.lives > 0) loadLevel(game.index);
     else setState("gameover", "Game over. Druk op Enter om opnieuw te beginnen.");
   }
@@ -442,7 +462,7 @@ function drawBombAt(x, y, t) {
   ctx.quadraticCurveTo(4, -22 - 12 * left, 6 + 10 * left, -22 - 10 * left);
   ctx.stroke();
   const tip = [6 + 10 * left, -22 - 10 * left];
-  const flick = 4 + Math.random() * 3;
+  const flick = 5 + Math.sin(t * 6) * 0.8;
   const spark = ctx.createRadialGradient(tip[0], tip[1], 0, tip[0], tip[1], flick * 2);
   spark.addColorStop(0, "#fff7c2");
   spark.addColorStop(0.5, "#ffb347");
@@ -461,22 +481,44 @@ function drawBombAt(x, y, t) {
 
 function drawPlayer(t) {
   const [x, y] = playerPx();
-  const walking = fx.moveT < 1;
+  const hurt = fx.hurt;
+  const walking = fx.moveT < 1 && !hurt;
   const swing = walking ? Math.sin(clamp01(fx.moveT) * Math.PI) * (fx.steps % 2 ? 1 : -1) : 0;
-  const bob = walking ? -Math.abs(Math.sin(clamp01(fx.moveT) * Math.PI)) * 4 : Math.sin(t * 3) * 1;
+  let bob = walking ? -Math.abs(Math.sin(clamp01(fx.moveT) * Math.PI)) * 4 : Math.sin(t * 3) * 1;
   const happy = game.state === "defused" || game.state === "finished";
   const jump = happy ? -Math.abs(Math.sin(game.stateTime * 9)) * 10 : 0;
   const [ex, ey] = { U: [0, -2], D: [0, 1], L: [-3, 0], R: [3, 0] }[fx.dir];
+  // Blown up: fly away spinning, land charred and dizzy.
+  let ox = 0;
+  let rot = 0;
+  let flight = 0;
+  if (hurt) {
+    flight = clamp01(hurt.t / 0.7);
+    ox = hurt.dx * 36 * flight;
+    bob = -Math.sin(flight * Math.PI) * 70;
+    rot = flight < 1
+      ? hurt.dx * Math.PI * 2 * ease(flight)
+      : Math.sin(hurt.t * 7) * 0.2 * Math.exp(-(hurt.t - 0.7) * 1.2);
+  }
+  const skin = hurt ? "#6e5848" : "#f8c291";
+  const landed = hurt && flight >= 1;
 
   ctx.save();
-  ctx.translate(x, y + bob + jump);
-
   ctx.fillStyle = "rgba(0,0,0,0.3)";
   ctx.beginPath();
-  ctx.ellipse(0, 26 - bob - jump, 14, 4, 0, 0, Math.PI * 2);
+  ctx.ellipse(x + ox, y + 26, 14 * (1 + bob / 140), 4, 0, 0, Math.PI * 2);
   ctx.fill();
+  if (hurt && hurt.t < 0.5) {
+    ctx.fillStyle = `rgba(20,20,20,${0.5 - hurt.t})`;
+    ctx.beginPath();
+    ctx.ellipse(x, y + 24, 30, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
-  ctx.strokeStyle = "#1e3799";
+  ctx.translate(x + ox, y + bob + jump);
+  ctx.rotate(rot);
+
+  ctx.strokeStyle = hurt ? "#1a1f3a" : "#1e3799";
   ctx.lineWidth = 6;
   ctx.lineCap = "round";
   ctx.beginPath();
@@ -486,40 +528,89 @@ function drawPlayer(t) {
   ctx.lineTo(5 + swing * 6, 24);
   ctx.stroke();
 
-  ctx.fillStyle = "#4a69bd";
+  ctx.fillStyle = hurt ? "#2d3550" : "#4a69bd";
   ctx.beginPath();
   ctx.roundRect(-12, -6, 24, 20, 7);
   ctx.fill();
-  ctx.fillStyle = "#f6b93b";
+  ctx.fillStyle = hurt ? "#5c4a22" : "#f6b93b";
   ctx.fillRect(-12, 4, 24, 3);
 
-  ctx.strokeStyle = "#f8c291";
+  ctx.strokeStyle = skin;
   ctx.lineWidth = 5;
   ctx.beginPath();
-  const arm = happy ? -14 : swing * 5;
+  let armL = happy ? -14 : swing * 5;
+  let armR = happy ? -14 : -swing * 5;
+  if (hurt) {
+    armL = landed ? 4 : -16 + Math.sin(hurt.t * 40) * 6;
+    armR = landed ? 4 : -16 - Math.sin(hurt.t * 40) * 6;
+  }
   ctx.moveTo(-12, 0);
-  ctx.lineTo(-17, 8 + arm);
+  ctx.lineTo(-17, 8 + armL);
   ctx.moveTo(12, 0);
-  ctx.lineTo(17, 8 + (happy ? -14 : -swing * 5));
+  ctx.lineTo(17, 8 + armR);
   ctx.stroke();
 
-  ctx.fillStyle = "#f8c291";
+  ctx.fillStyle = skin;
   ctx.beginPath();
   ctx.arc(0, -16, 10, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "#222";
-  if (fx.dir !== "U") {
+  if (hurt) {
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    for (const sx of [-3.5, 3.5]) {
+      ctx.moveTo(sx - 2, -18);
+      ctx.lineTo(sx + 2, -14);
+      ctx.moveTo(sx + 2, -18);
+      ctx.lineTo(sx - 2, -14);
+    }
+    for (let i = -2; i <= 2; i++) {
+      ctx.moveTo(i * 4, -25);
+      ctx.lineTo(i * 6 + (i % 2 ? 2 : -2), -33);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#111";
+    ctx.beginPath();
+    ctx.ellipse(0, -10, 2.5, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (fx.dir !== "U") {
+    ctx.fillStyle = "#222";
     ctx.beginPath();
     ctx.arc(-3.5 + ex, -16 + ey, 1.8, 0, Math.PI * 2);
     ctx.arc(3.5 + ex, -16 + ey, 1.8, 0, Math.PI * 2);
     ctx.fill();
   }
 
+  if (!hurt) drawHat(0, -19, 0);
+  if (landed) {
+    ctx.fillStyle = "#ffd32a";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    for (let i = 0; i < 3; i++) {
+      const a = t * 5 + (i * Math.PI * 2) / 3;
+      ctx.fillText("\u2605", Math.cos(a) * 16, -32 + Math.sin(a) * 5);
+    }
+  }
+  ctx.restore();
+
+  if (hurt) {
+    // The hat flies off and lands crooked back on the head.
+    const k = clamp01(hurt.t / 1.4);
+    const hx = x + ox - hurt.dx * 30 * Math.sin(k * Math.PI);
+    const hy = y + bob - 19 - Math.sin(k * Math.PI) * 120;
+    drawHat(hx, hy, k < 1 ? hurt.dx * k * Math.PI * 4 : hurt.dx * 0.35);
+  }
+}
+
+function drawHat(x, y, rot) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
   ctx.fillStyle = "#fbc531";
   ctx.beginPath();
-  ctx.arc(0, -19, 11, Math.PI, 0);
+  ctx.arc(0, 0, 11, Math.PI, 0);
   ctx.fill();
-  ctx.fillRect(-13, -20, 26, 3);
+  ctx.fillRect(-13, -1, 26, 3);
   ctx.restore();
 }
 
@@ -601,7 +692,7 @@ function drawTitle(t) {
   ctx.globalAlpha = 0.6 + Math.sin(t * 4) * 0.4;
   ctx.font = "bold 22px system-ui, sans-serif";
   ctx.fillStyle = COLORS.text;
-  ctx.fillText("Druk op Enter", 300, 340);
+  ctx.fillText("Tik of druk op Enter", 300, 340);
   ctx.globalAlpha = 1;
 }
 
@@ -623,10 +714,20 @@ function draw(t) {
     return;
   }
   drawWalls();
+  const blown = game.state === "exploded" || (game.state === "gameover" && fx.hurt);
   game.bombs.forEach((key) => {
-    if (key !== game.defusedAt) drawBomb(key, t);
+    if (key === game.defusedAt) return;
+    if (!blown) {
+      drawBomb(key, t);
+      return;
+    }
+    const [x, y] = bombPos(key);
+    ctx.fillStyle = "rgba(10,10,10,0.55)";
+    ctx.beginPath();
+    ctx.ellipse(x, y + 6, 26, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
   });
-  if (game.state !== "exploded" || game.stateTime < 0.1) drawPlayer(t);
+  drawPlayer(t);
   drawParticles();
   drawTimerBar(t);
   if (game.state === "edit") {
@@ -644,8 +745,8 @@ function draw(t) {
     ctx.globalAlpha = 1;
   }
   if (game.state === "paused") drawPanel([["PAUZE", 36], ["Druk op P", 18]]);
-  if (game.state === "gameover") drawPanel([["GAME OVER", 36, "#ff6b6b"], [`Score ${game.score}`, 20], ["Druk op Enter", 18]]);
-  if (game.state === "finished") drawPanel([["GEWONNEN!", 36, "#7bed9f"], [`Score ${game.score}`, 20], ["Druk op Enter", 18]]);
+  if (game.state === "gameover") drawPanel([["GAME OVER", 36, "#ff6b6b"], [`Score ${game.score}`, 20], ["Tik of druk op Enter", 18]]);
+  if (game.state === "finished") drawPanel([["GEWONNEN!", 36, "#7bed9f"], [`Score ${game.score}`, 20], ["Tik of druk op Enter", 18]]);
   ctx.restore();
   if (fx.flash > 0) {
     ctx.fillStyle = `rgba(255, 240, 200, ${fx.flash * 0.8})`;
@@ -671,36 +772,57 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "Enter" && ["title", "gameover", "finished"].includes(game.state)) {
     startGame();
   } else if ((e.key === "r" || e.key === "R") && game.state === "playing") {
-    loadLevel(game.index);
+    blowUp("BOEM! Herstarten kost een leven.");
   } else if (e.key === "p" || e.key === "P") {
     if (game.state === "playing") setState("paused", "Pauze \u2014 druk op P");
     else if (game.state === "paused") setState("playing");
   }
 });
 
-document.querySelectorAll(".pad button").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    if (["title", "gameover", "finished"].includes(game.state)) startGame();
-    else move(btn.dataset.dir);
-  });
-});
-
-let swipeStart = null;
-canvas.addEventListener("touchstart", (e) => {
-  const t = e.changedTouches[0];
-  swipeStart = [t.clientX, t.clientY];
-}, { passive: true });
-canvas.addEventListener("touchend", (e) => {
-  if (!swipeStart || game.state === "edit") return;
-  const t = e.changedTouches[0];
-  const dx = t.clientX - swipeStart[0];
-  const dy = t.clientY - swipeStart[1];
-  swipeStart = null;
+// Tap zones like the Godot version: top/bottom third of the screen = up/down,
+// otherwise left/right third = left/right; the centre does nothing.
+// Reacting on pointerdown (not up) avoids taps getting lost to scroll/gesture cancels.
+document.addEventListener("pointerdown", (e) => {
+  if (e.target.closest("button, textarea, a, #editor") || game.state === "edit") return;
+  if (e.pointerType !== "mouse") e.preventDefault();
   if (["title", "gameover", "finished"].includes(game.state)) {
     startGame();
-  } else if (Math.max(Math.abs(dx), Math.abs(dy)) >= 24) {
-    move(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "R" : "L") : (dy > 0 ? "D" : "U"));
+    return;
   }
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (e.clientY < h / 3) move("U");
+  else if (e.clientY > (2 * h) / 3) move("D");
+  else if (e.clientX < w / 3) move("L");
+  else if (e.clientX > (2 * w) / 3) move("R");
+}, { passive: false });
+
+document.getElementById("restart-btn").addEventListener("click", () => {
+  if (["playing", "paused"].includes(game.state)) blowUp("BOEM! Herstarten kost een leven.");
+});
+
+// Fullscreen: native where supported (Android), otherwise a CSS-only layout (iPhone).
+const fsBtn = document.getElementById("fs-btn");
+function setFullscreen(on) {
+  document.body.classList.toggle("fs", on);
+  fsBtn.textContent = on ? "\u2715" : "\u26f6";
+}
+fsBtn.addEventListener("click", async () => {
+  const on = !document.body.classList.contains("fs");
+  setFullscreen(on);
+  try {
+    if (on && document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+      await screen.orientation?.lock?.("landscape").catch(() => {});
+    } else if (!on && document.fullscreenElement) {
+      await document.exitFullscreen();
+    }
+  } catch {
+    // Native fullscreen is optional; the CSS layout already applies.
+  }
+});
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) setFullscreen(false);
 });
 
 // --- Edit mode: fix levels by hand and export the corrections for tools/overrides.json ---
